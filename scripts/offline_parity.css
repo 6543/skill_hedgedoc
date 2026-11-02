@@ -1,0 +1,25 @@
+/* Make reveal.js themes look like HedgeDoc 1.x slide mode:
+   system font, headings keep their case, monospace code. */
+.reveal {
+  font-family:
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    Roboto,
+    "Helvetica Neue",
+    Arial,
+    sans-serif;
+}
+.reveal h1,
+.reveal h2,
+.reveal h3,
+.reveal h4,
+.reveal h5,
+.reveal h6 {
+  font-family: inherit;
+  text-transform: none;
+}
+.reveal pre,
+.reveal code {
+  font-family: ui-monospace, Menlo, Monaco, Consolas, "Courier New", monospace;
+}

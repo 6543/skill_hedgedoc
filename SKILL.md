@@ -1,6 +1,6 @@
 ---
-name: hedgedoc
-description: Create, read, edit, upload to and download from HedgeDoc (formerly CodiMD) collaborative markdown pads, including images and media, and format markdown for HedgeDoc's document, published (/s/) and slide-presentation (/p/, reveal.js) modes. Use whenever the user mentions HedgeDoc or CodiMD, shares a pad/note URL (e.g. pad.example.org/ID, /s/ID, /p/ID), wants meeting minutes, docs or a slide deck put on a pad, wants to pull a pad's markdown and images locally, or push local markdown with images to a pad, even if they only say "pad" or "our md notes server".
+name: "hedgedoc"
+description: Create, read, edit, upload to and download from HedgeDoc (formerly CodiMD) collaborative markdown pads, including images and media, and format markdown for HedgeDoc's document, published (/s/) and slide-presentation (/p/, reveal.js) modes. Use whenever the user mentions HedgeDoc or CodiMD, shares a pad/note URL (e.g. pad.example.org/ID, /s/ID, /p/ID), wants meeting minutes, docs or a slide deck put on a pad, wants to pull a pad's markdown and images locally, or push local markdown with images to a pad, even if they only say "pad" or "our md notes server". Also use it when the user wants to "export offline", i.e. turn a pad's slide deck into one self-contained HTML file (or zip) that presents without internet and still carries the original markdown and images for re-upload, or wants to restore such a package back into a pad.
 ---
 
 # HedgeDoc
@@ -20,7 +20,8 @@ export HEDGEDOC_COOKIE=<connect.sid value>          # optional: login session, s
 python3 scripts/hedgedoc.py server-info             # version, upload policy: run this first
 ```
 
-Python 3.9+. Dependencies (`requests`, `python-socketio[client]`) are used from the system
+Python 3.9+. Dependencies (`requests`, `python-socketio[client]`, for `export-offline` also
+PyYAML or `ruamel.yaml`) are used from the system
 when installed. Otherwise the script loads the bundled pure-Python wheels in
 `scripts/vendor/` (sha256-checked against `MANIFEST.json`, extracted to
 `~/.cache/hedgedoc-skill` or the temp dir, or imported straight from the wheels on a
@@ -56,6 +57,8 @@ or cookies back into chat.
 | pad → local .md + its images | `pull <note> -o dir [--localize] [--external]` |
 | revision history | `revisions <note>`, `revision <note> <time_ms>` |
 | check HedgeDoc formatting pitfalls | `lint file.md` (offline, exit 1 on warnings) |
+| pad or local deck → one offline HTML / zip | `export-offline <note or note.md> -o deck.html` (or `deck.zip`) |
+| offline HTML → `note.md` + `media/` again | `extract-offline deck.html -o dir [--force]` |
 
 `<note>` = any note URL (`/<id>`, `?view`, `/s/<short>`, `/p/<short>`, `/…/download`) or a bare
 id with `HEDGEDOC_URL` set. Output is JSON (except `download`/`upload`); errors go to stderr
@@ -111,6 +114,31 @@ GIF). PDFs, video, office files cannot be uploaded: link to them or embed
 relative links; `push dir/note.md` recreates it on another instance (uploads images,
 rewrites links).
 
+**Export offline** (the user says "export offline", wants the talk on a laptop without
+internet, a single file to archive or send, or a copy of the deck that survives the pad):
+
+```bash
+python3 scripts/hedgedoc.py export-offline https://pad.example.org/p/abc -o talk.zip
+```
+
+The output name decides the format: `.html` is the presentation alone; `.zip` adds the
+standalone `extract_offline.py` and a README, which is what to give someone who does not
+have this skill. Ask which one only if the user's words do not settle it. The HTML embeds
+the bundled reveal.js 6 (`scripts/vendor/reveal.js-*.tar.xz`, no npm or internet needed),
+styled like HedgeDoc's `/p/` view, and keeps the markdown and images byte-identical
+inside, so `extract-offline` restores them and `push dir/note.md` makes a new pad.
+
+A local deck works as input too. Images under `media/` and other local image files are
+embedded; web images need `--external`, which downloads them into the package. The
+user's files are never changed (a temp copy is packaged). The export stops instead of
+writing a package with holes, and its error names the images; pass the hint on, and for
+web images just rerun with `--external` when the user asked for an offline file.
+HedgeDoc-only extras (`:::` callouts, `[TOC]`, mermaid, math, `{%youtube %}` embeds) are not
+rendered offline; check the deck for them and tell the user. Before handing the file
+over, run `extract-offline` on it into a temp dir and compare with `pull --localize`
+output; it should be identical. Details, payload format and a render check:
+`references/offline-export.md`.
+
 ## Traps (why the script does what it does)
 
 - 1.x has **no HTTP endpoint to edit** a note. Edits go through socket.io operational
@@ -133,7 +161,10 @@ rewrites links).
 - `references/api-2x.md`: 2.x `/api/v2` (bearer tokens, real PUT, any-file media). Read when
   `server-info` shows version 2.x (or `/api/v2/monitoring` answers JSON); the CLI does not
   support 2.x, use its HTTP API directly.
-- `scripts/vendor/`: offline wheel bundle + `MANIFEST.json`; `scripts/update_vendor.py`
-  refreshes it.
-- `scripts/test_hedgedoc.py`: offline tests for the CLI logic
-  (`python3 -m unittest test_hedgedoc` inside `scripts/`).
+- `references/offline-export.md`: what `export-offline` mirrors from HedgeDoc, the payload
+  format, limits and how to check a package renders. Read when exporting or when an
+  exported deck looks different from the pad.
+- `scripts/vendor/`: offline wheel bundle + `MANIFEST.json`, reveal.js archive +
+  `ASSETS.json`; `scripts/update_vendor.py` refreshes both.
+- Tests, inside `scripts/`: `python3 -m unittest test_hedgedoc test_offline` and
+  `node --test offline_runtime.test.js`.

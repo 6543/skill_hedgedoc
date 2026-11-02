@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""hedgedoc.py: talk to a HedgeDoc 1.x server (create, read, edit, media, lint).
+"""hedgedoc.py: talk to a HedgeDoc 1.x server (create, read, edit, media, lint, offline export).
 
-Deps: requests (all commands), python-socketio[client] (update/append/push to existing note).
+Deps: requests (all commands), python-socketio[client] (update/append/push to existing note),
+      PyYAML or ruamel.yaml (export-offline). Bundled wheels in vendor/ cover all of them.
     pip install requests "python-socketio[client]"
 
 Server:  --server URL  or env HEDGEDOC_URL  (not needed when a full note URL is given)
@@ -19,6 +20,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 import threading
 import time
 from urllib.parse import unquote, urlsplit
@@ -721,6 +723,105 @@ def _push_media(c: Client, md: str, base_dir: str) -> tuple[str, dict]:
     return rewrite_links(md, uploaded), uploaded
 
 
+def _pull(c: Client, note: str, out_dir: str, external: bool = False, localize: bool = False) -> dict:
+    """Note + its uploaded media into out_dir (note.md, media/); returns the pull result."""
+    md = c.download(note)
+    media_dir = os.path.join(out_dir, "media")
+    mapping = {}
+    for u in find_server_media(md, c.server, external):
+        try:
+            mapping[u] = "media/" + os.path.basename(c.fetch(u, media_dir))
+        except Exception as e:  # noqa: BLE001
+            print(f"warn: {u}: {e}", file=sys.stderr)
+    if localize:
+        md = rewrite_links(md, mapping)
+    os.makedirs(out_dir, exist_ok=True)
+    dest = os.path.join(out_dir, "note.md")
+    with open(dest, "w", encoding="utf-8", newline="") as fh:
+        fh.write(md)
+    return {"note": dest, "media": mapping}
+
+
+def _download_image(url: str, dest_dir: str, a) -> str:
+    return Client(url, a.cookie or os.environ.get("HEDGEDOC_COOKIE"), a.timeout).fetch(url, dest_dir)
+
+
+def _stage_local_deck(src: str, tmp: str, a) -> tuple[str, list[str]]:
+    """Copy a local deck into tmp in the pull --localize layout: images outside media/
+    (other local paths, web URLs with --external) become media/<file>. src stays untouched."""
+    import shutil
+
+    import offline
+
+    with open(src, encoding="utf-8", newline="") as fh:
+        md = fh.read()
+    base = os.path.dirname(os.path.abspath(src))
+    outside = offline.unbundled_images(md)
+    web = [t for t in outside if re.match(r"^https?://", t)]
+    if web and not a.external:
+        raise HedgeDocError(
+            "images on the web would not work offline: " + ", ".join(web) + " (pass --external to download "
+            "them into the package; your files stay unchanged)"
+        )
+    local = find_local_media(md, base)
+    unknown = [t for t in outside if t not in web and t not in local]
+    if unknown:
+        raise HedgeDocError("image files not found: " + ", ".join(unknown))
+    media_dir = os.path.join(tmp, "media")
+    os.makedirs(media_dir, exist_ok=True)
+    for ref in set(offline.MEDIA_REF.findall(md)):
+        if os.path.isfile(os.path.join(base, ref)):
+            shutil.copyfile(os.path.join(base, ref), os.path.join(tmp, ref))
+    taken = set(os.listdir(media_dir))
+    mapping = {}
+    for target in outside:
+        with tempfile.TemporaryDirectory(dir=tmp) as dl:
+            path = _download_image(target, dl, a) if target in web else local[target]
+            stem, ext = os.path.splitext(re.sub(r"[^A-Za-z0-9._-]", "-", os.path.basename(path)))
+            if ext.lower() not in offline.MEDIA_TYPES:
+                raise HedgeDocError(f"{target}: not a supported image type ({', '.join(offline.MEDIA_TYPES)})")
+            name, n = stem + ext, 1
+            while name in taken:
+                n += 1
+                name = f"{stem}-{n}{ext}"
+            taken.add(name)
+            shutil.copyfile(path, os.path.join(media_dir, name))
+        mapping[target] = "media/" + name
+    staged = os.path.join(tmp, os.path.basename(src))
+    with open(staged, "w", encoding="utf-8", newline="") as fh:
+        fh.write(rewrite_links(md, mapping))
+    return staged, sorted(mapping)
+
+
+def _export_offline(a) -> dict:
+    import offline
+
+    if not _importable("yaml"):
+        ensure_deps(("ruamel.yaml",))
+    reveal = offline.RevealSource(a.reveal) if a.reveal else offline.bundled_reveal()
+    if os.path.isfile(a.src):
+        with open(a.src, encoding="utf-8") as fh:
+            if not offline.unbundled_images(fh.read()):  # already media/ layout: package the file as is
+                offline.export(a.src, a.output, reveal, a.source_url)
+                return {"written": a.output, "source": a.src}
+        with tempfile.TemporaryDirectory(prefix="hedgedoc-offline-") as tmp:
+            staged, embedded = _stage_local_deck(a.src, tmp, a)
+            offline.export(staged, a.output, reveal, a.source_url)
+        return {"written": a.output, "source": a.src, "embedded": embedded}
+    c, note = _client_for(a, a.src)
+    source_url = a.source_url
+    if not source_url:
+        try:
+            source_url = c.links(note)["slide"]
+        except HedgeDocError:
+            source_url = c.url(note)
+    with tempfile.TemporaryDirectory(prefix="hedgedoc-offline-") as tmp:
+        # media that failed to download stays a URL; the builder refuses it instead of shipping broken images
+        pulled = _pull(c, note, tmp, a.external, localize=True)
+        offline.export(pulled["note"], a.output, reveal, source_url)
+    return {"written": a.output, "source": source_url, "media": len(pulled["media"])}
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(
         prog="hedgedoc.py", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -782,6 +883,17 @@ def main(argv=None) -> int:
 
     sp = sub.add_parser("lint", help="check HedgeDoc formatting pitfalls (offline)")
     sp.add_argument("src")
+
+    sp = sub.add_parser("export-offline", help="deck as one offline HTML (.html) or HTML + extractor (.zip)")
+    sp.add_argument("src", help="note URL/id, or a local .md with media/ next to it (pull --localize layout)")
+    sp.add_argument("-o", "--output", required=True, help="deck.html or deck.zip")
+    sp.add_argument("--source-url", help="link stored in the package (default: the pad's /p/ URL)")
+    sp.add_argument("--external", action="store_true", help="also embed external image URLs")
+    sp.add_argument("--reveal", help="other reveal.js: unpacked dist/ dir or .tar.xz (default: bundled)")
+    sp = sub.add_parser("extract-offline", help="restore markdown + media from an export-offline HTML")
+    sp.add_argument("html")
+    sp.add_argument("-o", "--out-dir", required=True)
+    sp.add_argument("--force", action="store_true", help="overwrite existing files")
 
     a = p.parse_args(argv)
     try:
@@ -880,21 +992,14 @@ def main(argv=None) -> int:
             _out(res)
         elif a.cmd == "pull":
             c, note = _client_for(a, a.note)
-            md = c.download(note)
-            media_dir = os.path.join(a.out_dir, "media")
-            mapping = {}
-            for u in find_server_media(md, c.server, a.external):
-                try:
-                    mapping[u] = "media/" + os.path.basename(c.fetch(u, media_dir))
-                except Exception as e:  # noqa: BLE001
-                    print(f"warn: {u}: {e}", file=sys.stderr)
-            if a.localize:
-                md = rewrite_links(md, mapping)
-            os.makedirs(a.out_dir, exist_ok=True)
-            dest = os.path.join(a.out_dir, "note.md")
-            with open(dest, "w", encoding="utf-8", newline="") as fh:
-                fh.write(md)
-            _out({"note": dest, "media": mapping})
+            _out(_pull(c, note, a.out_dir, a.external, a.localize))
+        elif a.cmd == "export-offline":
+            _out(_export_offline(a))
+        elif a.cmd == "extract-offline":
+            import extract_offline
+
+            written = extract_offline.extract(a.html, a.out_dir, a.force)
+            _out({"markdown": str(written[0]), "files": len(written), "next": f"push {written[0]}"})
     except (HedgeDocError, ValueError, OSError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
