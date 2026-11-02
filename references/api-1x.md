@@ -99,6 +99,7 @@ Read: `limited`/`protected` need login, `private` owner only.
 - `POST /uploadimage`, multipart field **`image`**. Response `{"link": "https://…/uploads/<uuid>.<ext>"}`.
 - `enableUploads`: `all` | `registered` | `none` (see `/config`).
 - Default allowed MIME types: jpeg, png, gif, svg+xml, webp (`allowedUploadMimeTypes` in `/config`).
+  Animated WebP is accepted; APNG is rejected (convert to animated WebP or GIF).
   **No PDFs, videos, text files.** For those: host elsewhere and embed (`{%pdf URL %}`, link, YouTube).
 - Server checks the magic bytes AND that the file extension matches them: `photo.jpg` that is
   really a PNG → 400. SVG is sanitised with DOMPurify.

@@ -159,6 +159,110 @@ Keys in slide view: Space/arrows navigate, Esc overview, S speaker view, B pause
 Fit content: aim for a title + at most ~6 bullets or one image per slide. Long tables and
 code overflow because reveal does not auto-shrink. Split them.
 
+### Slide-mode traps
+
+These render wrong without any lint warning, so check them by hand (and with the render
+check below):
+
+- **Images in one row stay on one line.** `breaks: true` turns every newline into `<br>`,
+  so images on separate lines stack vertically. Put images that should sit side by side
+  on the same line:
+
+  ```markdown
+  ![](https://…/a.png =250x) ![](https://…/b.png =250x) ![](https://…/c.png =250x)
+  ```
+
+- **`<!-- .element: … -->` targets the previous sibling element**, not the enclosing
+  block. When a heading starts with an inline image (`## ![](logo.svg =40x) Title`), the
+  comment's attributes land on the `<img>`, not the `<h2>`. For heading tweaks, tag the
+  slide and style it from a `<style>` block instead. A `<style>` block applies to the whole
+  deck, so scope its rules to the slide class:
+
+  ```markdown
+  <!-- .slide: class="logo-title" -->
+
+  <style>
+  .reveal .logo-title h2 { text-transform: none; }
+  .reveal .logo-title h2 img { height: 1em; vertical-align: middle; border: none; box-shadow: none; }
+  </style>
+
+  ## ![](https://…/logo.svg) Project X
+  ```
+
+- **`Note:` ends the visible slide.** Everything after the `Note:` line goes into the
+  speaker notes, including code blocks, images and text. Put notes last in each slide,
+  after any code block.
+
+- **Code blocks have their own size limits.** reveal.js 3 themes cap `pre code` at
+  `max-height: 400px` (then it scrolls) and `pre` at `width: 90%`. A long block scrolls
+  inside a slide that otherwise fits, so the audience sees a cut-off listing with a
+  scrollbar and no slide overflow. Check code blocks for hidden scrolling, not only slide
+  overflow. Fix by shortening or splitting the block across slides.
+
+### Render check
+
+`lint` reads markdown only. To catch layout problems, open the real slide view with
+Playwright (`pip install playwright`, `playwright install chromium`), disable transitions,
+step through every slide with `Reveal.slide(h, v)` and flag slides whose content is taller
+than 720px plus code blocks with `scrollHeight > clientHeight`. Vertical sub-slides are
+covered; speaker notes are not counted.
+
+```python
+# render_check.py  usage: python3 render_check.py https://pad.example.org/p/<shortid>
+import json
+import sys
+
+from playwright.sync_api import sync_playwright
+
+MAX_H = 720  # px of slide content at the default slide size; raise if slideOptions.height is set
+
+MEASURE = """([h, v, maxH]) => new Promise(done => {
+  Reveal.slide(h, v);
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    const s = Reveal.getCurrentSlide();
+    const issues = [];
+    if (s.scrollHeight > maxH) issues.push(`content ${s.scrollHeight}px > ${maxH}px`);
+    s.querySelectorAll('pre code').forEach((c, i) => {
+      if (c.scrollHeight > c.clientHeight)
+        issues.push(`code block ${i + 1} scrolls: ${c.scrollHeight}px in ${c.clientHeight}px`);
+    });
+    const t = s.querySelector('h1, h2, h3');
+    done({h, v, title: t ? t.textContent.trim() : '', issues});
+  }));
+})"""
+
+
+def main(url: str) -> int:
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page(viewport={"width": 1280, "height": 800})
+        page.goto(url, wait_until="networkidle")
+        page.wait_for_function("window.Reveal && Reveal.isReady()")
+        page.evaluate(
+            "Reveal.configure({transition: 'none', backgroundTransition: 'none'})"
+        )
+        stacks = page.evaluate(
+            "Reveal.getHorizontalSlides().map(s => s.querySelectorAll(':scope > section').length || 1)"
+        )
+        bad = []
+        for h, n in enumerate(stacks):
+            for v in range(n):
+                r = page.evaluate(MEASURE, [h, v, MAX_H])
+                if r["issues"]:
+                    bad.append(r)
+        browser.close()
+    print(json.dumps(bad, indent=2))
+    return 1 if bad else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1]))
+```
+
+Output is a JSON list of failing slides (`h`/`v` index, first heading, issues); exit 1 if
+any. The slide is visible as `/p/<shortid>#/<h>/<v>`. Run it against the real `/p/` URL,
+not the editor preview, since the two differ (§5).
+
 ## 5. Recipes from real-world use
 
 Collected from instance docs (universities, server.camp, community forum):

@@ -50,7 +50,7 @@ or cookies back into chat.
 | every URL (edit/view/both/publish/slide/print-pdf) | `links <note>` |
 | replace content of existing note | `update <note> new.md` |
 | add to end of existing note | `append <note> extra.md` |
-| upload images → markdown lines | `upload a.png b.jpg` |
+| upload images → markdown lines | `--server URL upload a.png b.jpg` |
 | download media URLs | `fetch <url>... -o dir` |
 | local .md + local images → pad | `push doc.md` (new) or `push doc.md --note <note>` (replace) |
 | pad → local .md + its images | `pull <note> -o dir [--localize] [--external]` |
@@ -59,7 +59,10 @@ or cookies back into chat.
 
 `<note>` = any note URL (`/<id>`, `?view`, `/s/<short>`, `/p/<short>`, `/…/download`) or a bare
 id with `HEDGEDOC_URL` set. Output is JSON (except `download`/`upload`); errors go to stderr
-with exit code 2.
+with exit code 2. Global options (`--server URL`, `--cookie`, `--timeout`) belong to the main
+parser, so they go **before** the subcommand: `hedgedoc.py --server URL upload …` works,
+`hedgedoc.py upload --server URL …` fails. `upload` takes no note argument, so it needs
+`--server` or `HEDGEDOC_URL`.
 
 ## Choosing the format
 
@@ -75,7 +78,10 @@ for exact syntax:
 - No "book mode" in HedgeDoc (that is HackMD): build an index note linking chapter notes.
 
 Always `lint` a deck before upload. The common failure is `---` right under a text line,
-which renders as a heading underline instead of a slide break.
+which renders as a heading underline instead of a slide break. `lint` cannot see layout, so
+before handing over a `/p/` link also read the slide-mode traps (inline images, `.element`
+targets, `Note:` placement, code block limits) and run the render check, both in
+`references/formatting-and-modes.md` §4.
 
 ## Workflows
 
@@ -90,8 +96,15 @@ editors keep their cursor and unrelated text. The script verifies the saved resu
 reports `verified: false`, re-download and tell the user. Overwriting a note the user did
 not author is destructive: confirm first.
 
-**Media**: 1.x accepts only images (default jpeg/png/gif/svg/webp, see `server-info`) via
-`upload`. PDFs, video, office files cannot be uploaded: link to them or embed
+**Media**: 1.x accepts only images via `upload`:
+
+```bash
+python3 scripts/hedgedoc.py --server https://pad.example.org upload logo.svg demo.webp
+```
+
+Allowed by default (check `server-info` for the instance's list): jpeg, png, gif, svg,
+webp. Animated WebP works; APNG is rejected, so convert animations to animated WebP (or
+GIF). PDFs, video, office files cannot be uploaded: link to them or embed
 (`{%pdf https://… %}`, `{%youtube ID %}`). File extension must match content.
 
 **Back up / migrate**: `pull <note> -o dir --localize` gives `note.md` + `media/` with
